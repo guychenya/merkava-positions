@@ -1,17 +1,34 @@
 #!/usr/bin/env python3
-"""Generate a single self-contained HTML app from positions.json."""
-import json, html, os
+"""Generate a single self-contained index.html from positions.json (same directory).
 
-SRC = os.path.join(os.path.dirname(__file__), "..", "data", "positions.json")
-OUT = os.path.join(os.path.dirname(__file__), "index.html")
+Usage:
+    python3 build.py
+Reads ./positions.json (or ../data/positions.json as a fallback) and writes ./index.html.
+Self-contained — no external dependencies, safe to run in CI.
+"""
+import json, os
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SRC = os.path.join(HERE, "positions.json")
+if not os.path.exists(SRC):
+    alt = os.path.join(HERE, "..", "data", "positions.json")
+    if os.path.exists(alt):
+        SRC = alt
+OUT = os.path.join(HERE, "index.html")
 
 with open(SRC, encoding="utf-8") as f:
     data = json.load(f)
 
-# Trim heavy text fields to keep the file lean but informative
+# Keep only the fields the UI actually uses (drop heavy/unused ones).
+KEEP = {
+    "tender_number", "position", "title", "ministry", "unit", "location",
+    "category", "rank", "job_number", "percent", "publish_type", "pub_date",
+    "submission_deadline", "dedicated", "cluster", "request_id", "hot",
+    "days_left", "description", "requirements", "remarks",
+}
 def clean(p):
-    out = dict(p)
-    for k in ("requirements", "remarks"):
+    out = {k: p[k] for k in KEEP if k in p}
+    for k in ("requirements", "remarks", "description"):
         v = (out.get(k) or "").strip()
         if len(v) > 6000:
             v = v[:6000] + "…"
@@ -190,6 +207,7 @@ a{color:var(--accent);text-decoration:none}
   </div>
   <div class="d-body">
     <dl class="kv" id="d-kv"></dl>
+    <div class="section" id="d-desc-wrap" style="display:none"><h3>תיאור תפקיד</h3><div class="box" id="d-desc"></div></div>
     <div class="section"><h3>דרישות</h3><div class="box" id="d-req"></div></div>
     <div class="section"><h3>הערות</h3><div class="box" id="d-rem"></div></div>
   </div>
@@ -268,7 +286,6 @@ function render(){
   $('#shown').textContent=items.length;
   countEl.textContent = items.length ? ('מוצגות '+items.length+' משרות') : '';
   emptyEl.style.display = items.length? 'none':'block';
-  // rebuild
   listEl.innerHTML='';
   const frag=document.createDocumentFragment();
   items.forEach((p,i)=>{
@@ -298,7 +315,6 @@ function render(){
     frag.appendChild(row);
   });
   listEl.appendChild(frag);
-  // keep selected highlight
   if(currentIdx!=null){
     const el=listEl.querySelector('[data-idx="'+currentIdx+'"]');
     if(el) el.classList.add('selected');
@@ -329,8 +345,18 @@ function openDetail(p,row){
     ['ID דרישה',p.request_id],
   ];
   $('#d-kv').innerHTML=kv.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('');
+  const desc=(p.description||'').trim();
+  $('#d-desc-wrap').style.display=desc?'':'none';
+  $('#d-desc').textContent=desc||'—';
   $('#d-req').textContent=p.requirements||'—';
   $('#d-rem').textContent=p.remarks||'—';
+  $('#d-open').onclick=()=>{
+    if(p.request_id){
+      window.open('https://merkava.mrp.gov.il/giusp/index.html#/position/'+p.request_id,'_blank','noopener');
+    } else {
+      window.open('https://merkava.mrp.gov.il/giusp/index.html','_blank','noopener');
+    }
+  };
   $('#detail').classList.add('on'); $('#detail').setAttribute('aria-hidden','false');
   $('#backdrop').classList.add('on');
 }
@@ -361,10 +387,6 @@ $('#clear').addEventListener('click',()=>{
 $('#d-close').addEventListener('click',closeDetail);
 $('#backdrop').addEventListener('click',closeDetail);
 $('#d-copy').addEventListener('click',copyDetails);
-$('#d-open').addEventListener('click',()=>{
-  // Merkava public portal search by tender number
-  window.open('https://merkava.mrp.gov.il/','_blank','noopener');
-});
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDetail(); });
 
 render();
