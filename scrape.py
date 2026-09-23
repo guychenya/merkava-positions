@@ -22,6 +22,8 @@ Exit code 0 on success (>=1 position), 1 on endpoint error / zero results
 import json
 import os
 import re
+import shutil
+import ssl
 import subprocess
 import sys
 import urllib.parse
@@ -78,13 +80,65 @@ def rank(from_, to_):
     return ""
 
 
-def fetch_all():
-    url = SVC + "?" + urllib.parse.urlencode({"$format": "json"})
+def _permissive_context():
+    """TLS context that copes with older servers.
+
+    GitHub-hosted runners use OpenSSL 3 (Ubuntu 24.04) with a strict
+    cipher/SECLEVEL default that the Merkava server's TLS stack rejects
+    (SSLV3_ALERT_HANDSHAKE_FAILURE). Allowing TLS 1.2 with a relaxed
+    cipher set gets the handshake through, while still rejecting TLS 1.0/1.1.
+    """
+    ctx = ssl.create_default_context()
+    try:
+        ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
+    except (ssl.SSLError, OSError):
+        pass
+    try:
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        # Allow up to TLS 1.3 — keep the default max.
+    except AttributeError:
+        pass
+    return ctx
+
+
+def _http_get(url):
+    """Return response body bytes via stdlib urllib (permissive TLS)."""
     req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=45) as r:
+    with urllib.request.urlopen(req, timeout=45, context=_permissive_context()) as r:
         if r.status != 200:
             raise RuntimeError(f"HTTP {r.status}")
-        return json.loads(r.read().decode("utf-8"))
+        return r.read()
+
+
+def _curl_get(url):
+    """Fallback: fetch via curl (present on CI, independent TLS stack / curl-openssl)."""
+    out = subprocess.run(
+        ["curl", "-fsSL", "--tlsv1.2", "--retry", "2", "--retry-delay", "3",
+         "--max-time", "60", url],
+        capture_output=True, text=False,
+    )
+    if out.returncode != 0:
+        raise RuntimeError(f"curl failed ({out.returncode}): {out.stderr.decode(errors='replace')[:200]}")
+    return out.stdout
+
+
+def fetch_all():
+    url = SVC + "?" + urllib.parse.urlencode({"$format": "json"})
+    last_err = None
+    for attempt in (1, 2):
+        try:
+            body = _http_get(url)
+        except Exception as e:  # noqa: BLE001 — fallback to curl below
+            last_err = e
+        else:
+            return json.loads(body.decode("utf-8"))
+        # Try the curl fallback for this round.
+        try:
+            body = _curl_get(url)
+            return json.loads(body.decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+    raise RuntimeError(f"all fetch attempts failed: {last_err}")
 
 
 def map_record(r):
